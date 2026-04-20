@@ -449,6 +449,8 @@ let raycaster      = new THREE.Raycaster();
 let tempMatrix     = new THREE.Matrix4();
 let interactables  = [];     // meshes the ray can hit
 let musicPlaying   = false;
+let vrMusicBtn     = null;   // 3D music button in VR scene
+let vrMusicLabel   = null;   // text sprite on the button
 const playerName   = () => inpName.value.trim() || 'Guest';
 
 
@@ -603,6 +605,9 @@ function onSelectStart(event) {
         const obj = hits[0].object;
         if (obj === hotspotMesh && hotspotPanel) {
             hotspotPanel.visible = !hotspotPanel.visible;
+        }
+        if (obj === vrMusicBtn) {
+            toggleVRMusic();
         }
     }
 }
@@ -829,6 +834,128 @@ function createHotspot(x, y, z, imageUrl, label) {
 
 
 /* ──────────────────────────────────────────────
+   10g. VR IN-SCENE MUSIC CONTROL PANEL
+        (visible only inside VR headset)
+   ────────────────────────────────────────────── */
+function createVRMusicPanel() {
+    const group = new THREE.Group();
+
+    // Panel background — rounded look via a box
+    const panelGeo = new THREE.PlaneGeometry(0.32, 0.12);
+    const panelMat = new THREE.MeshBasicMaterial({
+        color: 0x1a1d28, transparent: true, opacity: 0.92, side: THREE.DoubleSide
+    });
+    const panel = new THREE.Mesh(panelGeo, panelMat);
+    group.add(panel);
+
+    // Border glow
+    const borderGeo = new THREE.PlaneGeometry(0.34, 0.14);
+    const borderMat = new THREE.MeshBasicMaterial({
+        color: 0x7b6cf6, transparent: true, opacity: 0.3, side: THREE.DoubleSide
+    });
+    const border = new THREE.Mesh(borderGeo, borderMat);
+    border.position.z = -0.001;
+    group.add(border);
+
+    // Text label
+    updateVRMusicLabel(group, musicPlaying ? '⏸ Pause' : '▶ Play');
+
+    // Position: floating in front-left of user at start
+    group.position.set(-0.8, 1.2, -1.5);
+
+    group.userData.billboard = true;
+    group.userData.isVRMusicBtn = true;
+
+    scene.add(group);
+    vrMusicBtn = panel;         // the clickable mesh
+    interactables.push(panel);  // make it raycastable
+
+    return group;
+}
+
+function updateVRMusicLabel(group, text) {
+    // Remove old label if exists
+    if (vrMusicLabel) {
+        group.remove(vrMusicLabel);
+        vrMusicLabel.material.map.dispose();
+        vrMusicLabel.material.dispose();
+    }
+
+    const canvas  = document.createElement('canvas');
+    canvas.width  = 256;
+    canvas.height = 80;
+    const ctx     = canvas.getContext('2d');
+
+    // Clear
+    ctx.clearRect(0, 0, 256, 80);
+
+    // Background
+    ctx.fillStyle = 'rgba(26,29,40,0.95)';
+    ctx.beginPath();
+    ctx.roundRect(4, 4, 248, 72, 14);
+    ctx.fill();
+
+    // Border
+    ctx.strokeStyle = 'rgba(123,108,246,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(4, 4, 248, 72, 14);
+    ctx.stroke();
+
+    // Text
+    ctx.fillStyle = '#e8ecf4';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 128, 42);
+
+    // Small "MUSIC" label at top
+    ctx.fillStyle = 'rgba(123,108,246,0.8)';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('MUSIC', 128, 18);
+
+    const tex    = new THREE.CanvasTexture(canvas);
+    const spMat  = new THREE.SpriteMaterial({ map: tex, transparent: true });
+    const sprite = new THREE.Sprite(spMat);
+    sprite.scale.set(0.32, 0.10, 1);
+    sprite.position.z = 0.002;
+    group.add(sprite);
+    vrMusicLabel = sprite;
+}
+
+async function toggleVRMusic() {
+    if (!bgMusic) return;
+
+    // Resume any suspended AudioContext
+    if (listener && listener.context && listener.context.state === 'suspended') {
+        await listener.context.resume();
+    }
+
+    if (musicPlaying) {
+        bgMusic.pause();
+        musicPlaying = false;
+        hudMusic.textContent = '▶ Play Music';
+    } else {
+        try {
+            await bgMusic.play();
+            musicPlaying = true;
+            hudMusic.textContent = '⏸ Pause Music';
+        } catch(e) {
+            console.warn('[Music] VR play blocked:', e);
+        }
+    }
+
+    // Update 3D label
+    const vrGroup = scene.children.find(c => c.userData?.isVRMusicBtn);
+    if (vrGroup) {
+        updateVRMusicLabel(vrGroup, musicPlaying ? '⏸ Pause' : '▶ Play');
+    }
+
+    console.log('[Music] Toggled in VR. Playing:', musicPlaying);
+}
+
+
+/* ──────────────────────────────────────────────
    11. BUILD SCENE FROM CREATION DATA
    ────────────────────────────────────────────── */
 async function buildScene(data) {
@@ -854,6 +981,8 @@ async function buildScene(data) {
     if (musicUrl) {
         setProgress(60, 'Loading music…');
         loadMusic(musicUrl);
+        // Create the 3D VR music control panel
+        createVRMusicPanel();
     } else {
         hudMusic.textContent = '🚫 No Music';
         hudMusic.disabled = true;
