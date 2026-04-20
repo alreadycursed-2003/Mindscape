@@ -252,17 +252,18 @@
             display: block;
             width: 100% !important;
             height: 100% !important;
-            position: relative;
+            position: absolute;
+            top: 0; left: 0;
             z-index: 1;
         }
 
-        /* ── HUD (non-VR overlay) ── */
+        /* ── HUD (inside vr-container for fullscreen visibility) ── */
         #hud {
-            position: fixed;
+            position: absolute;
             bottom: 20px; left: 50%;
             transform: translateX(-50%);
-            z-index: 300;
-            background: rgba(8,9,13,0.82);
+            z-index: 999;
+            background: rgba(8,9,13,0.85);
             backdrop-filter: blur(24px);
             border: 1px solid var(--border);
             border-radius: 14px;
@@ -270,6 +271,7 @@
             display: none;
             align-items: center; gap: 14px;
             box-shadow: 0 8px 36px rgba(0,0,0,0.55);
+            pointer-events: auto;
         }
         #hud.active { display: flex; }
         .hud-name {
@@ -300,6 +302,8 @@
             font-weight: 600 !important;
             border-radius: 10px !important;
             box-shadow: 0 4px 18px var(--brand-glow) !important;
+            z-index: 998 !important;
+            pointer-events: auto !important;
         }
 
         /* ── Responsive ── */
@@ -373,16 +377,14 @@
 <!-- ════════════════════════════════════════════
      VR SCENE CONTAINER
      ════════════════════════════════════════════ -->
-<div id="vr-container"></div>
-
-<!-- ════════════════════════════════════════════
-     HUD (shown in non-VR mode)
-     ════════════════════════════════════════════ -->
-<div id="hud">
-    <div class="hud-name" id="hud-name">—</div>
-    <div class="hud-div"></div>
-    <button class="hud-btn" id="hud-music" title="Toggle music">🔊 Music</button>
-    <button class="hud-btn exit-btn" id="hud-exit">✕ Exit</button>
+<div id="vr-container">
+    <!-- HUD lives inside vr-container so it stays visible in fullscreen -->
+    <div id="hud">
+        <div class="hud-name" id="hud-name">—</div>
+        <div class="hud-div"></div>
+        <button class="hud-btn" id="hud-music" title="Toggle music">🔊 Music</button>
+        <button class="hud-btn exit-btn" id="hud-exit">✕ Exit</button>
+    </div>
 </div>
 
 
@@ -516,7 +518,7 @@ function initScene() {
     // VR button
     const vrBtn = VRButton.createButton(renderer);
     vrBtn.id = 'VRButton';
-    document.body.appendChild(vrBtn);
+    vrContainer.appendChild(vrBtn);
 
     // XR session events
     renderer.xr.addEventListener('sessionstart', () => {
@@ -722,23 +724,25 @@ async function loadBackground(url) {
 function loadMusic(url) {
     if (!url) return;
     bgMusic = new Audio();
-    bgMusic.crossOrigin = 'anonymous';
     bgMusic.loop = true;
     bgMusic.volume = 0.5;
     bgMusic.preload = 'auto';
-    bgMusic.src = url;
 
     bgMusic.addEventListener('canplaythrough', () => {
-        console.log('[Music] Ready to play');
+        console.log('[Music] Ready to play. Duration:', bgMusic.duration);
         hudMusic.style.display = 'inline-flex';
         hudMusic.textContent = '▶ Play Music';
-    });
+    }, { once: true });
+
     bgMusic.addEventListener('error', (e) => {
-        console.warn('[Music] Load failed:', e);
+        console.error('[Music] Load error:', bgMusic.error?.code, bgMusic.error?.message);
         hudMusic.textContent = '⚠ No Audio';
         hudMusic.disabled = true;
     });
+
+    bgMusic.src = url;
     bgMusic.load();
+    console.log('[Music] Loading from:', url);
 }
 
 // 10e — Create a floating image panel
@@ -929,16 +933,37 @@ function animate() {
 /* ──────────────────────────────────────────────
    13. MUSIC CONTROLS
    ────────────────────────────────────────────── */
-hudMusic.addEventListener('click', () => {
+hudMusic.addEventListener('click', async () => {
+    console.log('[Music] Button clicked. bgMusic:', !!bgMusic, 'musicPlaying:', musicPlaying);
     if (!bgMusic) return;
+
+    // Resume any suspended AudioContext (Three.js creates one via AudioListener)
+    if (listener && listener.context && listener.context.state === 'suspended') {
+        console.log('[Music] Resuming suspended AudioContext...');
+        await listener.context.resume();
+    }
+
     if (musicPlaying) {
         bgMusic.pause();
         hudMusic.textContent = '▶ Play Music';
+        musicPlaying = false;
+        console.log('[Music] Paused');
     } else {
-        bgMusic.play().catch(e => console.warn('Audio play blocked:', e));
-        hudMusic.textContent = '⏸ Pause Music';
+        try {
+            bgMusic.currentTime = bgMusic.currentTime || 0;
+            const playPromise = bgMusic.play();
+            if (playPromise) {
+                await playPromise;
+            }
+            hudMusic.textContent = '⏸ Pause Music';
+            musicPlaying = true;
+            console.log('[Music] Playing!');
+        } catch (e) {
+            console.error('[Music] Play failed:', e.name, e.message);
+            hudMusic.textContent = '⚠ Tap Again';
+            // Some browsers need a second tap after AudioContext resumes
+        }
     }
-    musicPlaying = !musicPlaying;
 });
 
 
