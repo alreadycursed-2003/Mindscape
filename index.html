@@ -776,7 +776,7 @@ function createImagePanel(url, position, width = 1.2) {
 }
 
 // 10f — Hotspot marker
-function createHotspot(x, y, z, imageUrl, label) {
+function createHotspot(x, y, z, imageUrl) {
     // Glowing sphere
     const geo = new THREE.SphereGeometry(0.12, 32, 32);
     const mat = new THREE.MeshBasicMaterial({
@@ -797,28 +797,6 @@ function createHotspot(x, y, z, imageUrl, label) {
     ring.userData.billboard = true;
     scene.add(ring);
     hotspotMesh.userData.ring = ring;
-
-    // Label sprite
-    if (label) {
-        const canvas  = document.createElement('canvas');
-        canvas.width  = 512; canvas.height = 64;
-        const ctx     = canvas.getContext('2d');
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.roundRect(0, 0, 512, 64, 12);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.font      = '28px Instrument Sans, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, 256, 32);
-
-        const tex    = new THREE.CanvasTexture(canvas);
-        const spMat  = new THREE.SpriteMaterial({ map: tex, transparent: true });
-        const sprite = new THREE.Sprite(spMat);
-        sprite.scale.set(1.2, 0.15, 1);
-        sprite.position.set(x, y + 0.3, z);
-        scene.add(sprite);
-    }
 
     // Floating image panel (hidden by default, shows on gaze/click)
     if (imageUrl) {
@@ -990,32 +968,19 @@ async function buildScene(data) {
     }
     setProgress(70, 'Music loaded');
 
-    // Prompt image — show as floating panel in front of user
-    const promptUrl = assets.promptImageUrl || sceneData.promptImageUrl;
-    if (promptUrl) {
-        setProgress(80, 'Loading prompt image…');
-        promptPanel = await createImagePanel(
-            promptUrl,
-            new THREE.Vector3(0, 1.6, -2.5),
-            1.4
-        );
-    }
-
     // Hotspot
     const hs = data.hotspot || {};
     if (hs.x !== undefined && hs.y !== undefined && hs.z !== undefined) {
         setProgress(90, 'Placing hotspot…');
         createHotspot(
             hs.x, hs.y, hs.z,
-            hs.imageUrl || null,
-            hs.imageLabel || data.assets?.promptImageLabel || null
+            hs.imageUrl || null
         );
     } else if (sceneData.hotspotX !== undefined) {
         setProgress(90, 'Placing hotspot…');
         createHotspot(
             sceneData.hotspotX, sceneData.hotspotY, sceneData.hotspotZ,
-            sceneData.hotspotImageUrl || null,
-            sceneData.hotspotImageLabel || null
+            sceneData.hotspotImageUrl || null
         );
     }
 
