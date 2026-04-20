@@ -252,6 +252,8 @@
             display: block;
             width: 100% !important;
             height: 100% !important;
+            position: relative;
+            z-index: 1;
         }
 
         /* ── HUD (non-VR overlay) ── */
@@ -716,17 +718,27 @@ async function loadBackground(url) {
     }
 }
 
-// 10d — Music
+// 10d — Music (HTML5 Audio — reliable on Quest 2)
 function loadMusic(url) {
     if (!url) return;
-    bgMusic = new THREE.Audio(listener);
-    const audioLoader = new THREE.AudioLoader();
-    audioLoader.load(url, (buffer) => {
-        bgMusic.setBuffer(buffer);
-        bgMusic.setLoop(true);
-        bgMusic.setVolume(0.5);
-        // Don't auto-play — needs user gesture on Quest 2
+    bgMusic = new Audio();
+    bgMusic.crossOrigin = 'anonymous';
+    bgMusic.loop = true;
+    bgMusic.volume = 0.5;
+    bgMusic.preload = 'auto';
+    bgMusic.src = url;
+
+    bgMusic.addEventListener('canplaythrough', () => {
+        console.log('[Music] Ready to play');
+        hudMusic.style.display = 'inline-flex';
+        hudMusic.textContent = '▶ Play Music';
     });
+    bgMusic.addEventListener('error', (e) => {
+        console.warn('[Music] Load failed:', e);
+        hudMusic.textContent = '⚠ No Audio';
+        hudMusic.disabled = true;
+    });
+    bgMusic.load();
 }
 
 // 10e — Create a floating image panel
@@ -832,9 +844,16 @@ async function buildScene(data) {
 
     // Music
     const musicUrl = assets.musicUrl || sceneData.musicUrl;
+    console.log('[Build] Music URL:', musicUrl);
+    console.log('[Build] assets:', JSON.stringify(assets));
+    console.log('[Build] sceneData keys:', Object.keys(sceneData));
     if (musicUrl) {
         setProgress(60, 'Loading music…');
         loadMusic(musicUrl);
+    } else {
+        hudMusic.textContent = '🚫 No Music';
+        hudMusic.disabled = true;
+        hudMusic.style.opacity = '0.4';
     }
     setProgress(70, 'Music loaded');
 
@@ -911,13 +930,13 @@ function animate() {
    13. MUSIC CONTROLS
    ────────────────────────────────────────────── */
 hudMusic.addEventListener('click', () => {
-    if (!bgMusic || !bgMusic.buffer) return;
+    if (!bgMusic) return;
     if (musicPlaying) {
         bgMusic.pause();
-        hudMusic.textContent = '🔇 Music';
+        hudMusic.textContent = '▶ Play Music';
     } else {
-        bgMusic.play();
-        hudMusic.textContent = '🔊 Music';
+        bgMusic.play().catch(e => console.warn('Audio play blocked:', e));
+        hudMusic.textContent = '⏸ Pause Music';
     }
     musicPlaying = !musicPlaying;
 });
@@ -927,7 +946,8 @@ hudMusic.addEventListener('click', () => {
    14. EXIT → BACK TO ENTRY
    ────────────────────────────────────────────── */
 hudExit.addEventListener('click', () => {
-    if (bgMusic && bgMusic.isPlaying) bgMusic.stop();
+    if (bgMusic) { bgMusic.pause(); bgMusic.src = ''; }
+    musicPlaying = false;
     renderer.setAnimationLoop(null);
     renderer.dispose();
     vrContainer.classList.remove('active');
