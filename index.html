@@ -252,18 +252,15 @@
             display: block;
             width: 100% !important;
             height: 100% !important;
-            position: absolute;
-            top: 0; left: 0;
-            z-index: 1;
         }
 
-        /* ── HUD (inside vr-container for fullscreen visibility) ── */
+        /* ── HUD (non-VR overlay) ── */
         #hud {
-            position: absolute;
+            position: fixed;
             bottom: 20px; left: 50%;
             transform: translateX(-50%);
-            z-index: 999;
-            background: rgba(8,9,13,0.85);
+            z-index: 300;
+            background: rgba(8,9,13,0.82);
             backdrop-filter: blur(24px);
             border: 1px solid var(--border);
             border-radius: 14px;
@@ -271,7 +268,6 @@
             display: none;
             align-items: center; gap: 14px;
             box-shadow: 0 8px 36px rgba(0,0,0,0.55);
-            pointer-events: auto;
         }
         #hud.active { display: flex; }
         .hud-name {
@@ -302,8 +298,6 @@
             font-weight: 600 !important;
             border-radius: 10px !important;
             box-shadow: 0 4px 18px var(--brand-glow) !important;
-            z-index: 998 !important;
-            pointer-events: auto !important;
         }
 
         /* ── Responsive ── */
@@ -377,14 +371,16 @@
 <!-- ════════════════════════════════════════════
      VR SCENE CONTAINER
      ════════════════════════════════════════════ -->
-<div id="vr-container">
-    <!-- HUD lives inside vr-container so it stays visible in fullscreen -->
-    <div id="hud">
-        <div class="hud-name" id="hud-name">—</div>
-        <div class="hud-div"></div>
-        <button class="hud-btn" id="hud-music" title="Toggle music">🔊 Music</button>
-        <button class="hud-btn exit-btn" id="hud-exit">✕ Exit</button>
-    </div>
+<div id="vr-container"></div>
+
+<!-- ════════════════════════════════════════════
+     HUD (shown in non-VR mode)
+     ════════════════════════════════════════════ -->
+<div id="hud">
+    <div class="hud-name" id="hud-name">—</div>
+    <div class="hud-div"></div>
+    <button class="hud-btn" id="hud-music" title="Toggle music">🔊 Music</button>
+    <button class="hud-btn exit-btn" id="hud-exit">✕ Exit</button>
 </div>
 
 
@@ -411,7 +407,7 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
-// const rtdb = firebase.database();   // ← uncomment when multiplayer is wired up
+const rtdb = firebase.database();
 
 
 /* ──────────────────────────────────────────────
@@ -449,8 +445,6 @@ let raycaster      = new THREE.Raycaster();
 let tempMatrix     = new THREE.Matrix4();
 let interactables  = [];     // meshes the ray can hit
 let musicPlaying   = false;
-let vrMusicBtn     = null;   // 3D music button in VR scene
-let vrMusicLabel   = null;   // text sprite on the button
 const playerName   = () => inpName.value.trim() || 'Guest';
 
 
@@ -520,7 +514,7 @@ function initScene() {
     // VR button
     const vrBtn = VRButton.createButton(renderer);
     vrBtn.id = 'VRButton';
-    vrContainer.appendChild(vrBtn);
+    document.body.appendChild(vrBtn);
 
     // XR session events
     renderer.xr.addEventListener('sessionstart', () => {
@@ -605,9 +599,6 @@ function onSelectStart(event) {
         const obj = hits[0].object;
         if (obj === hotspotMesh && hotspotPanel) {
             hotspotPanel.visible = !hotspotPanel.visible;
-        }
-        if (obj === vrMusicBtn) {
-            toggleVRMusic();
         }
     }
 }
@@ -725,29 +716,17 @@ async function loadBackground(url) {
     }
 }
 
-// 10d — Music (HTML5 Audio — reliable on Quest 2)
+// 10d — Music
 function loadMusic(url) {
     if (!url) return;
-    bgMusic = new Audio();
-    bgMusic.loop = true;
-    bgMusic.volume = 0.5;
-    bgMusic.preload = 'auto';
-
-    bgMusic.addEventListener('canplaythrough', () => {
-        console.log('[Music] Ready to play. Duration:', bgMusic.duration);
-        hudMusic.style.display = 'inline-flex';
-        hudMusic.textContent = '▶ Play Music';
-    }, { once: true });
-
-    bgMusic.addEventListener('error', (e) => {
-        console.error('[Music] Load error:', bgMusic.error?.code, bgMusic.error?.message);
-        hudMusic.textContent = '⚠ No Audio';
-        hudMusic.disabled = true;
+    bgMusic = new THREE.Audio(listener);
+    const audioLoader = new THREE.AudioLoader();
+    audioLoader.load(url, (buffer) => {
+        bgMusic.setBuffer(buffer);
+        bgMusic.setLoop(true);
+        bgMusic.setVolume(0.5);
+        // Don't auto-play — needs user gesture on Quest 2
     });
-
-    bgMusic.src = url;
-    bgMusic.load();
-    console.log('[Music] Loading from:', url);
 }
 
 // 10e — Create a floating image panel
@@ -776,7 +755,7 @@ function createImagePanel(url, position, width = 1.2) {
 }
 
 // 10f — Hotspot marker
-function createHotspot(x, y, z, imageUrl) {
+function createHotspot(x, y, z, imageUrl, label) {
     // Glowing sphere
     const geo = new THREE.SphereGeometry(0.12, 32, 32);
     const mat = new THREE.MeshBasicMaterial({
@@ -798,6 +777,28 @@ function createHotspot(x, y, z, imageUrl) {
     scene.add(ring);
     hotspotMesh.userData.ring = ring;
 
+    // Label sprite
+    if (label) {
+        const canvas  = document.createElement('canvas');
+        canvas.width  = 512; canvas.height = 64;
+        const ctx     = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.roundRect(0, 0, 512, 64, 12);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font      = '28px Instrument Sans, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, 256, 32);
+
+        const tex    = new THREE.CanvasTexture(canvas);
+        const spMat  = new THREE.SpriteMaterial({ map: tex, transparent: true });
+        const sprite = new THREE.Sprite(spMat);
+        sprite.scale.set(1.2, 0.15, 1);
+        sprite.position.set(x, y + 0.3, z);
+        scene.add(sprite);
+    }
+
     // Floating image panel (hidden by default, shows on gaze/click)
     if (imageUrl) {
         const panelPos = new THREE.Vector3(x, y + 0.6, z);
@@ -808,128 +809,6 @@ function createHotspot(x, y, z, imageUrl) {
             }
         });
     }
-}
-
-
-/* ──────────────────────────────────────────────
-   10g. VR IN-SCENE MUSIC CONTROL PANEL
-        (visible only inside VR headset)
-   ────────────────────────────────────────────── */
-function createVRMusicPanel() {
-    const group = new THREE.Group();
-
-    // Panel background — rounded look via a box
-    const panelGeo = new THREE.PlaneGeometry(0.32, 0.12);
-    const panelMat = new THREE.MeshBasicMaterial({
-        color: 0x1a1d28, transparent: true, opacity: 0.92, side: THREE.DoubleSide
-    });
-    const panel = new THREE.Mesh(panelGeo, panelMat);
-    group.add(panel);
-
-    // Border glow
-    const borderGeo = new THREE.PlaneGeometry(0.34, 0.14);
-    const borderMat = new THREE.MeshBasicMaterial({
-        color: 0x7b6cf6, transparent: true, opacity: 0.3, side: THREE.DoubleSide
-    });
-    const border = new THREE.Mesh(borderGeo, borderMat);
-    border.position.z = -0.001;
-    group.add(border);
-
-    // Text label
-    updateVRMusicLabel(group, musicPlaying ? '⏸ Pause' : '▶ Play');
-
-    // Position: floating in front-left of user at start
-    group.position.set(-0.8, 1.2, -1.5);
-
-    group.userData.billboard = true;
-    group.userData.isVRMusicBtn = true;
-
-    scene.add(group);
-    vrMusicBtn = panel;         // the clickable mesh
-    interactables.push(panel);  // make it raycastable
-
-    return group;
-}
-
-function updateVRMusicLabel(group, text) {
-    // Remove old label if exists
-    if (vrMusicLabel) {
-        group.remove(vrMusicLabel);
-        vrMusicLabel.material.map.dispose();
-        vrMusicLabel.material.dispose();
-    }
-
-    const canvas  = document.createElement('canvas');
-    canvas.width  = 256;
-    canvas.height = 80;
-    const ctx     = canvas.getContext('2d');
-
-    // Clear
-    ctx.clearRect(0, 0, 256, 80);
-
-    // Background
-    ctx.fillStyle = 'rgba(26,29,40,0.95)';
-    ctx.beginPath();
-    ctx.roundRect(4, 4, 248, 72, 14);
-    ctx.fill();
-
-    // Border
-    ctx.strokeStyle = 'rgba(123,108,246,0.6)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(4, 4, 248, 72, 14);
-    ctx.stroke();
-
-    // Text
-    ctx.fillStyle = '#e8ecf4';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, 128, 42);
-
-    // Small "MUSIC" label at top
-    ctx.fillStyle = 'rgba(123,108,246,0.8)';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('MUSIC', 128, 18);
-
-    const tex    = new THREE.CanvasTexture(canvas);
-    const spMat  = new THREE.SpriteMaterial({ map: tex, transparent: true });
-    const sprite = new THREE.Sprite(spMat);
-    sprite.scale.set(0.32, 0.10, 1);
-    sprite.position.z = 0.002;
-    group.add(sprite);
-    vrMusicLabel = sprite;
-}
-
-async function toggleVRMusic() {
-    if (!bgMusic) return;
-
-    // Resume any suspended AudioContext
-    if (listener && listener.context && listener.context.state === 'suspended') {
-        await listener.context.resume();
-    }
-
-    if (musicPlaying) {
-        bgMusic.pause();
-        musicPlaying = false;
-        hudMusic.textContent = '▶ Play Music';
-    } else {
-        try {
-            await bgMusic.play();
-            musicPlaying = true;
-            hudMusic.textContent = '⏸ Pause Music';
-        } catch(e) {
-            console.warn('[Music] VR play blocked:', e);
-        }
-    }
-
-    // Update 3D label
-    const vrGroup = scene.children.find(c => c.userData?.isVRMusicBtn);
-    if (vrGroup) {
-        updateVRMusicLabel(vrGroup, musicPlaying ? '⏸ Pause' : '▶ Play');
-    }
-
-    console.log('[Music] Toggled in VR. Playing:', musicPlaying);
 }
 
 
@@ -953,20 +832,22 @@ async function buildScene(data) {
 
     // Music
     const musicUrl = assets.musicUrl || sceneData.musicUrl;
-    console.log('[Build] Music URL:', musicUrl);
-    console.log('[Build] assets:', JSON.stringify(assets));
-    console.log('[Build] sceneData keys:', Object.keys(sceneData));
     if (musicUrl) {
         setProgress(60, 'Loading music…');
         loadMusic(musicUrl);
-        // Create the 3D VR music control panel
-        createVRMusicPanel();
-    } else {
-        hudMusic.textContent = '🚫 No Music';
-        hudMusic.disabled = true;
-        hudMusic.style.opacity = '0.4';
     }
     setProgress(70, 'Music loaded');
+
+    // Prompt image — show as floating panel in front of user
+    const promptUrl = assets.promptImageUrl || sceneData.promptImageUrl;
+    if (promptUrl) {
+        setProgress(80, 'Loading prompt image…');
+        promptPanel = await createImagePanel(
+            promptUrl,
+            new THREE.Vector3(0, 1.6, -2.5),
+            1.4
+        );
+    }
 
     // Hotspot
     const hs = data.hotspot || {};
@@ -974,13 +855,15 @@ async function buildScene(data) {
         setProgress(90, 'Placing hotspot…');
         createHotspot(
             hs.x, hs.y, hs.z,
-            hs.imageUrl || null
+            hs.imageUrl || null,
+            hs.imageLabel || data.assets?.promptImageLabel || null
         );
     } else if (sceneData.hotspotX !== undefined) {
         setProgress(90, 'Placing hotspot…');
         createHotspot(
             sceneData.hotspotX, sceneData.hotspotY, sceneData.hotspotZ,
-            sceneData.hotspotImageUrl || null
+            sceneData.hotspotImageUrl || null,
+            sceneData.hotspotImageLabel || null
         );
     }
 
@@ -1012,6 +895,9 @@ function animate() {
             }
         }
 
+        // Animate peer avatars
+        updateAvatarAnimations(dt);
+
         // Billboards face camera
         scene.traverse(obj => {
             if (obj.userData.billboard) {
@@ -1027,37 +913,16 @@ function animate() {
 /* ──────────────────────────────────────────────
    13. MUSIC CONTROLS
    ────────────────────────────────────────────── */
-hudMusic.addEventListener('click', async () => {
-    console.log('[Music] Button clicked. bgMusic:', !!bgMusic, 'musicPlaying:', musicPlaying);
-    if (!bgMusic) return;
-
-    // Resume any suspended AudioContext (Three.js creates one via AudioListener)
-    if (listener && listener.context && listener.context.state === 'suspended') {
-        console.log('[Music] Resuming suspended AudioContext...');
-        await listener.context.resume();
-    }
-
+hudMusic.addEventListener('click', () => {
+    if (!bgMusic || !bgMusic.buffer) return;
     if (musicPlaying) {
         bgMusic.pause();
-        hudMusic.textContent = '▶ Play Music';
-        musicPlaying = false;
-        console.log('[Music] Paused');
+        hudMusic.textContent = '🔇 Music';
     } else {
-        try {
-            bgMusic.currentTime = bgMusic.currentTime || 0;
-            const playPromise = bgMusic.play();
-            if (playPromise) {
-                await playPromise;
-            }
-            hudMusic.textContent = '⏸ Pause Music';
-            musicPlaying = true;
-            console.log('[Music] Playing!');
-        } catch (e) {
-            console.error('[Music] Play failed:', e.name, e.message);
-            hudMusic.textContent = '⚠ Tap Again';
-            // Some browsers need a second tap after AudioContext resumes
-        }
+        bgMusic.play();
+        hudMusic.textContent = '🔊 Music';
     }
+    musicPlaying = !musicPlaying;
 });
 
 
@@ -1065,8 +930,7 @@ hudMusic.addEventListener('click', async () => {
    14. EXIT → BACK TO ENTRY
    ────────────────────────────────────────────── */
 hudExit.addEventListener('click', () => {
-    if (bgMusic) { bgMusic.pause(); bgMusic.src = ''; }
-    musicPlaying = false;
+    if (bgMusic && bgMusic.isPlaying) bgMusic.stop();
     renderer.setAnimationLoop(null);
     renderer.dispose();
     vrContainer.classList.remove('active');
@@ -1111,47 +975,146 @@ const VISITOR_ID   = 'v-' + Date.now() + '-' + Math.random().toString(36).slice(
 const AVATAR_COLORS = ['#7b6cf6', '#00dfa2', '#ff5272', '#f5a623', '#3bc9db'];
 const peerAvatars   = {};   // { visitorId: THREE.Group }
 
-// Generates a simple avatar: sphere head + name label
+// Cartoon humanoid avatar: head, body, arms, legs, eyes + name label
 function createAvatar(name, color) {
     const group = new THREE.Group();
+    group.userData.animTime  = 0;
+    group.userData.armSwing  = 0;
+    group.userData.lastPos   = new THREE.Vector3();
 
-    // Head
-    const headGeo = new THREE.SphereGeometry(0.15, 24, 24);
-    const headMat = new THREE.MeshStandardMaterial({ color, roughness: 0.3 });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 1.6;
+    const col     = new THREE.Color(color);
+    const darkCol = col.clone().multiplyScalar(0.65);
+
+    // ── Body ──
+    const bodyGeo = new THREE.CapsuleGeometry(0.13, 0.36, 8, 12);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.55 });
+    const body    = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.9;
+    group.add(body);
+    group.userData.body = body;
+
+    // ── Head ──
+    const headGeo = new THREE.SphereGeometry(0.2, 28, 28);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0xffe0c8, roughness: 0.5 });
+    const head    = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 1.64;
     group.add(head);
+    group.userData.head = head;
 
-    // Name label
-    const canvas  = document.createElement('canvas');
-    canvas.width  = 256; canvas.height = 48;
-    const ctx     = canvas.getContext('2d');
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.roundRect(0, 0, 256, 48, 8);
+    // Eyes — white sclera
+    const eyeGeo   = new THREE.SphereGeometry(0.052, 12, 12);
+    const scleraMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
+    const lEye = new THREE.Mesh(eyeGeo, scleraMat);
+    lEye.position.set(-0.085, 1.67, 0.17);
+    group.add(lEye);
+    const rEye = new THREE.Mesh(eyeGeo, scleraMat.clone());
+    rEye.position.set( 0.085, 1.67, 0.17);
+    group.add(rEye);
+
+    // Eyes — pupils
+    const pupilGeo = new THREE.SphereGeometry(0.028, 8, 8);
+    const pupilMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+    const lPupil   = new THREE.Mesh(pupilGeo, pupilMat);
+    lPupil.position.set(-0.085, 1.67, 0.2);
+    group.add(lPupil);
+    const rPupil = new THREE.Mesh(pupilGeo, pupilMat.clone());
+    rPupil.position.set( 0.085, 1.67, 0.2);
+    group.add(rPupil);
+
+    // ── Arms ──
+    const armGeo = new THREE.CapsuleGeometry(0.062, 0.27, 6, 8);
+    const armMat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.6 });
+    const lArm   = new THREE.Mesh(armGeo, armMat);
+    lArm.position.set(-0.25, 0.92, 0);
+    lArm.rotation.z =  0.18;
+    group.add(lArm);
+    group.userData.leftArm = lArm;
+
+    const rArm = new THREE.Mesh(armGeo, armMat.clone());
+    rArm.position.set( 0.25, 0.92, 0);
+    rArm.rotation.z = -0.18;
+    group.add(rArm);
+    group.userData.rightArm = rArm;
+
+    // ── Legs ──
+    const legGeo = new THREE.CapsuleGeometry(0.075, 0.28, 6, 8);
+    const legMat = new THREE.MeshStandardMaterial({ color: darkCol, roughness: 0.7 });
+    const lLeg   = new THREE.Mesh(legGeo, legMat);
+    lLeg.position.set(-0.1, 0.42, 0);
+    group.add(lLeg);
+    group.userData.leftLeg = lLeg;
+
+    const rLeg = new THREE.Mesh(legGeo, legMat.clone());
+    rLeg.position.set( 0.1, 0.42, 0);
+    group.add(rLeg);
+    group.userData.rightLeg = rLeg;
+
+    // ── Name label sprite ──
+    const canvas      = document.createElement('canvas');
+    canvas.width      = 256; canvas.height = 56;
+    const ctx         = canvas.getContext('2d');
+    ctx.fillStyle     = 'rgba(0,0,0,0.62)';
+    ctx.roundRect(0, 0, 256, 56, 10);
     ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.font      = '22px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(name.slice(0, 16), 128, 24);
+    ctx.fillStyle     = '#ffffff';
+    ctx.font          = 'bold 22px sans-serif';
+    ctx.textAlign     = 'center';
+    ctx.textBaseline  = 'middle';
+    ctx.fillText(name.slice(0, 16), 128, 28);
 
     const tex    = new THREE.CanvasTexture(canvas);
     const spMat  = new THREE.SpriteMaterial({ map: tex, transparent: true });
     const sprite = new THREE.Sprite(spMat);
-    sprite.scale.set(0.8, 0.15, 1);
-    sprite.position.y = 1.9;
+    sprite.scale.set(0.95, 0.19, 1);
+    sprite.position.y = 2.12;
     group.add(sprite);
+    group.userData.nameSprite = sprite;
 
     return group;
 }
 
-/*
-// ── UNCOMMENT BELOW TO ACTIVATE MULTIPLAYER ──
+// Called every frame to animate all peer avatars
+function updateAvatarAnimations(dt) {
+    for (const id in peerAvatars) {
+        const av = peerAvatars[id];
+        const ud = av.userData;
 
-const rtdb = firebase.database();
+        ud.animTime += dt;
+
+        // Idle bob — whole group gently rises/falls
+        const bob = Math.sin(ud.animTime * 1.9) * 0.022;
+        if (ud.body)       ud.body.position.y       = 0.9  + bob;
+        if (ud.head)       ud.head.position.y        = 1.64 + bob;
+        if (ud.nameSprite) ud.nameSprite.position.y  = 2.12 + bob;
+
+        // Movement detection for arm/leg swing
+        const curPos = new THREE.Vector3();
+        av.getWorldPosition(curPos);
+        const moved = curPos.distanceTo(ud.lastPos);
+        ud.lastPos.copy(curPos);
+
+        if (moved > 0.003) {
+            ud.armSwing += dt * 5.5;
+        } else {
+            // Dampen back to rest
+            ud.armSwing *= 0.88;
+        }
+
+        const swing = Math.sin(ud.armSwing) * 0.55;
+        if (ud.leftArm)  ud.leftArm.rotation.x  =  swing;
+        if (ud.rightArm) ud.rightArm.rotation.x  = -swing;
+        if (ud.leftLeg)  ud.leftLeg.rotation.x   = -swing * 0.6;
+        if (ud.rightLeg) ud.rightLeg.rotation.x  =  swing * 0.6;
+
+        // Head faces camera (billboard-style)
+        if (ud.head) {
+            ud.head.lookAt(camera.getWorldPosition(new THREE.Vector3()));
+        }
+    }
+}
 
 function joinRoom(creationId) {
-    const roomRef = rtdb.ref(`rooms/${creationId}/users/${VISITOR_ID}`);
+    const roomRef  = rtdb.ref(`rooms/${creationId}/users/${VISITOR_ID}`);
     const colorIdx = Math.floor(Math.random() * AVATAR_COLORS.length);
 
     // Write presence
@@ -1181,7 +1144,7 @@ function joinRoom(creationId) {
 
     usersRef.on('child_added', (snap) => {
         if (snap.key === VISITOR_ID) return;
-        const data = snap.val();
+        const data   = snap.val();
         const avatar = createAvatar(data.name, data.color);
         scene.add(avatar);
         peerAvatars[snap.key] = avatar;
@@ -1189,11 +1152,19 @@ function joinRoom(creationId) {
 
     usersRef.on('child_changed', (snap) => {
         if (snap.key === VISITOR_ID) return;
-        const data = snap.val();
+        const data   = snap.val();
         const avatar = peerAvatars[snap.key];
         if (!avatar) return;
-        avatar.position.set(data.position.x, 0, data.position.z);
-        avatar.children[0].position.y = data.position.y;   // head height
+
+        // Face direction of movement before updating position
+        const newX = data.position.x, newZ = data.position.z;
+        const dx = newX - avatar.position.x;
+        const dz = newZ - avatar.position.z;
+        if (Math.sqrt(dx * dx + dz * dz) > 0.01) {
+            avatar.rotation.y = Math.atan2(dx, dz);
+        }
+
+        avatar.position.set(newX, 0, newZ);
     });
 
     usersRef.on('child_removed', (snap) => {
@@ -1201,7 +1172,6 @@ function joinRoom(creationId) {
         if (avatar) { scene.remove(avatar); delete peerAvatars[snap.key]; }
     });
 }
-*/
 
 
 /* ──────────────────────────────────────────────
@@ -1238,8 +1208,8 @@ btnGo.addEventListener('click', async () => {
         // 6. Start render loop
         animate();
 
-        // 7. Multiplayer — uncomment when ready
-        // joinRoom(id);
+        // 7. Multiplayer — active
+        joinRoom(id);
 
     } catch (err) {
         console.error(err);
